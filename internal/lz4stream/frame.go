@@ -31,6 +31,7 @@ type Frame struct {
 	Checksum   uint32
 	checksum   xxh32.XXHZero
 	size       uint64 // uncompressed bytes read or written so far, checked against Descriptor.ContentSize
+	guard      DecodeGuard
 }
 
 // unexpectedEOF is for reads that must not hit the end of the source,
@@ -120,12 +121,36 @@ newFrame:
 		if _, err := io.CopyN(io.Discard, src, int64(skip)); err != nil {
 			return unexpectedEOF(err)
 		}
+		if f.guard != nil {
+			if err := f.guard.GuardFrame(true); err != nil {
+				return err
+			}
+		}
 		goto newFrame
 	default:
 		return lz4errors.ErrInvalidFrame
 	}
+	if f.guard != nil {
+		// Count the frame as soon as its magic is recognized, before the
+		// descriptor is read: a frame with a corrupt descriptor still began.
+		if err := f.guard.GuardFrame(false); err != nil {
+			return err
+		}
+	}
 	if err := f.Descriptor.initR(f, src); err != nil {
 		return unexpectedEOF(err)
+	}
+	if f.guard != nil {
+		// Reject a frame whose blocks could be too large before any block
+		// buffer is allocated.
+		if err := f.guard.GuardBlockSize(f.BlockSizeIndex().Bytes()); err != nil {
+			return err
+		}
+		if f.Descriptor.Flags.Size() {
+			if err := f.guard.GuardContentSize(f.Descriptor.ContentSize); err != nil {
+				return err
+			}
+		}
 	}
 	f.checksum.Reset()
 	f.size = 0

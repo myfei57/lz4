@@ -302,3 +302,88 @@ func TestDecodeWithDict(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeBlockLen checks the structural length scan against the decoder
+// itself: the length it reports must be what UncompressBlock produces, and
+// every block it rejects must fail to decode.
+func TestDecodeBlockLen(t *testing.T) {
+	// Blocks and dictionaries decoded in TestBlockDecode/TestDecodeWithDict.
+	valid := []struct {
+		src  string
+		dict string
+		want int
+	}{
+		{"", "", 0},     // empty block is a zero-length decode
+		{"\x00", "", 0}, // token with empty final literals
+		{"\x10a", "", 1},
+		{"\x10a\x01\x00", "", 5}, // 'a' plus a 4-byte match
+		{"\x11b\x0a\x00\x401234", "barbazquux", 10},
+		{"\x35foo\x09\x00\x401234", "0barbaz", 16},
+		// Block ending with its last match (empty final literals): the
+		// decoder returns after the match, so the scan must accept it.
+		{"\x30abc\x01\x00", "", 7},
+	}
+	for _, c := range valid {
+		n, err := DecodeBlockLen([]byte(c.src), len(c.dict))
+		if err != nil {
+			t.Errorf("DecodeBlockLen(%q) rejected a decodable block: %v", c.src, err)
+			continue
+		}
+		dst := make([]byte, n+1)
+		got, derr := UncompressBlock([]byte(c.src), dst, []byte(c.dict))
+		if derr != nil {
+			t.Errorf("DecodeBlockLen(%q)=%d but UncompressBlock: %v", c.src, n, derr)
+			continue
+		}
+		if got != n || n != c.want {
+			t.Errorf("DecodeBlockLen(%q)=%d, want %d (decode produced %d)", c.src, n, c.want, got)
+		}
+	}
+
+	invalid := []struct {
+		src  string
+		dict string
+	}{
+		{"\xf0", ""},              // literal extension runs out
+		{"\x10a\x01", ""},         // offset truncated
+		{"\x10a\x00\x00", ""},     // zero offset
+		{"\x10a\x03\x00", ""},     // offset before any output
+		{"\x11b\x0a\x00", ""},     // match offset into missing dict
+		{"\x50abcdef", ""},        // match expected, only one byte left
+		{"\x10a\x01\x00\x40", ""}, // final literals declared, missing
+	}
+	for _, c := range invalid {
+		n, err := DecodeBlockLen([]byte(c.src), len(c.dict))
+		if err == nil {
+			t.Errorf("DecodeBlockLen(%q)=%d, want an error", c.src, n)
+			continue
+		}
+		dst := make([]byte, 1<<16)
+		if got, derr := UncompressBlock([]byte(c.src), dst, []byte(c.dict)); derr == nil {
+			t.Errorf("DecodeBlockLen(%q) rejected a block UncompressBlock decoded to %d", c.src, got)
+		}
+	}
+
+	// Round trips: every block the compressor emits must measure to the
+	// input length.
+	var comp Compressor
+	for _, data := range [][]byte{
+		nil,
+		[]byte("a"),
+		bytes.Repeat([]byte("a"), 300),
+		bytes.Repeat([]byte("0123456789ab"), 6000),
+	} {
+		buf := make([]byte, CompressBlockBound(len(data)))
+		cn, _ := comp.CompressBlock(data, buf)
+		if cn == 0 {
+			continue
+		}
+		n, err := DecodeBlockLen(buf[:cn], 0)
+		if err != nil {
+			t.Fatalf("compressed %d bytes: %v", len(data), err)
+		}
+		if n != len(data) {
+			t.Fatalf("got %d, want %d", n, len(data))
+		}
+	}
+}

@@ -78,7 +78,18 @@ func (r *Reader) isNotConcurrent() bool {
 	return r.num == 1
 }
 
+// frameProbeSource marks the source as being probed for the start of a new
+// frame: if no source budget remains, the probe reports io.EOF rather than a
+// limit error, so a stream whose last frame ends exactly at the source budget
+// still completes.
+type frameProbeSource interface {
+	beginFrameProbe()
+}
+
 func (r *Reader) init() error {
+	if p, ok := r.src.(frameProbeSource); ok {
+		p.beginFrameProbe()
+	}
 	err := r.frame.ParseHeaders(r.src)
 	if err != nil {
 		return err
@@ -185,6 +196,20 @@ func (r *Reader) read(buf []byte) (int, error) {
 	_, err := block.Read(r.frame, r.src, r.cum)
 	if err != nil {
 		return 0, err
+	}
+	if g := r.frame.Guard(); g != nil && !block.Size.Uncompressed() {
+		// Raw blocks reserve inside block.Read, before their payload is
+		// fetched. For a compressed block measure the exact output, with
+		// match offsets validated, and reserve it before producing any
+		// byte: a block that would overflow the budget is discarded
+		// uncompressed, not decoded and thrown away.
+		n, merr := block.Measure(len(r.dict))
+		if merr != nil {
+			return 0, merr
+		}
+		if gerr := g.GuardOutput(n); gerr != nil {
+			return 0, gerr
+		}
 	}
 	var direct bool
 	dst := r.data[:cap(r.data)]

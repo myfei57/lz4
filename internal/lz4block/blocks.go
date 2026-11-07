@@ -58,6 +58,24 @@ func (b BlockSizeIndex) IsValid() bool {
 	return false
 }
 
+// Bytes returns the maximum uncompressed block size in bytes, or 0 for an
+// invalid index. Index 3 is the 8MiB size legacy frames use.
+func (b BlockSizeIndex) Bytes() int {
+	switch b {
+	case 4:
+		return int(Block64Kb)
+	case 5:
+		return int(Block256Kb)
+	case 6:
+		return int(Block1Mb)
+	case 7:
+		return int(Block4Mb)
+	case 3:
+		return int(Block8Mb)
+	}
+	return 0
+}
+
 func (b BlockSizeIndex) Get() []byte {
 	switch b {
 	case 4:

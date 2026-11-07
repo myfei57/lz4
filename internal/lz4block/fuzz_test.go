@@ -152,7 +152,22 @@ func FuzzDecodeBlockDifferential(f *testing.F) {
 			t.Fatalf("decodeBlock=%d decodeBlockGo=%d", gn, wn)
 		}
 		if gn >= 0 && (gn != wn || !bytes.Equal(got, want)) {
-			t.Fatalf("output mismatch: decodeBlock=%d decodeBlockGo=%d", gn, wn)
+			t.Fatalf("output mismatch: decodeBlock=%d decodeBlockGo=%d", wn, gn)
+		}
+		// The structural length scan must agree with both decoders: a
+		// block it rejects never decodes, and one it accepts decodes to
+		// exactly its length whenever the destination has room.
+		if len(src) > 0 {
+			n, err := DecodeBlockLen(src, len(dict))
+			if err != nil {
+				if wn >= 0 || gn >= 0 {
+					t.Fatalf("DecodeBlockLen rejected %v but decoded: go=%d asm=%d", err, wn, gn)
+				}
+			} else if (wn < 0 || gn < 0) && int(dstLen) >= n {
+				t.Fatalf("DecodeBlockLen=%d with room in dst=%d but decoding failed: go=%d asm=%d", n, dstLen, wn, gn)
+			} else if wn >= 0 && (n != wn || n != gn) {
+				t.Fatalf("DecodeBlockLen=%d go=%d asm=%d", n, wn, gn)
+			}
 		}
 	})
 }

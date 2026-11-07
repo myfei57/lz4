@@ -179,6 +179,25 @@ func (b *Blocks) initR(f *Frame, num int, src io.Reader) (chan []byte, error) {
 				block.Close(f)
 				break
 			}
+			if g := f.guard; g != nil && !block.Size.Uncompressed() {
+				// Blocks are uncompressed in separate goroutines, but this
+				// loop reads them serially: measure the exact output and
+				// reserve the budget here before dispatching, so workers
+				// cannot each see enough room and collectively exceed it.
+				// Dependent and legacy frames are decoded synchronously, so
+				// there is no dictionary here.
+				n, merr := block.Measure(0)
+				if merr != nil {
+					r.fail(merr)
+					block.Close(f)
+					break
+				}
+				if gerr := g.GuardOutput(n); gerr != nil {
+					r.fail(gerr)
+					block.Close(f)
+					break
+				}
+			}
 			c := make(chan []byte)
 			blocks <- c
 			go func() {
@@ -230,6 +249,9 @@ func (b *Blocks) initR(f *Frame, num int, src io.Reader) (chan []byte, error) {
 				lz4block.Put(buf)
 				continue
 			}
+			// The output budget was reserved serially with the exact
+			// length before decoding was dispatched, so retaining the
+			// result needs no further reservation.
 			// Perform checksum now as the blocks are received in order.
 			if f.Descriptor.Flags.ContentChecksum() {
 				_, _ = f.checksum.Write(buf)
@@ -361,7 +383,13 @@ func (b *FrameDataBlock) Read(f *Frame, src io.Reader, cum uint32) (uint32, erro
 	if f.isLegacy() {
 		switch x {
 		case frameMagicLegacy:
-			// Concatenated legacy frame.
+			// Concatenated legacy frame: its magic is read here rather than
+			// in ParseHeaders, so account for it as a frame.
+			if f.guard != nil {
+				if err := f.guard.GuardFrame(false); err != nil {
+					return 0, err
+				}
+			}
 			return b.Read(f, src, cum)
 		case cum:
 			// Only works in non concurrent mode, for concurrent mode
@@ -386,6 +414,21 @@ func (b *FrameDataBlock) Read(f *Frame, src io.Reader, cum uint32) (uint32, erro
 	if size > cap(b.data) || size < read {
 		return x, lz4errors.ErrOptionInvalidBlockSize
 	}
+	if f.guard != nil {
+		// Count the block, and reserve raw output before reading its
+		// payload: a block that exceeds a budget must not pull its data
+		// from the source. Compressed output is reserved after the payload
+		// is measured, in read() for sync mode or the read-ahead loop in
+		// concurrent mode.
+		if err := f.guard.GuardBlock(); err != nil {
+			return x, err
+		}
+		if b.Size.Uncompressed() {
+			if err := f.guard.GuardOutput(size); err != nil {
+				return x, err
+			}
+		}
+	}
 	b.data = b.data[:size]
 	if read > 0 {
 		b.data[0] = f.buf[0]
@@ -401,6 +444,14 @@ func (b *FrameDataBlock) Read(f *Frame, src io.Reader, cum uint32) (uint32, erro
 		b.Checksum = sum
 	}
 	return x, nil
+}
+
+// Measure returns the exact number of bytes the compressed block
+// decompresses to, without decompressing it. It must be called after Read
+// and only for a compressed block; dictLen is the length of the dictionary
+// in effect for dependent blocks.
+func (b *FrameDataBlock) Measure(dictLen int) (int, error) {
+	return lz4block.DecodeBlockLen(b.data, dictLen)
 }
 
 func (b *FrameDataBlock) Uncompress(f *Frame, dst, dict []byte, sum bool) ([]byte, error) {
