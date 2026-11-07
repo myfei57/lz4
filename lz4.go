@@ -49,6 +49,33 @@ func UncompressBlockWithDict(src, dst, dict []byte) (int, error) {
 	return lz4block.UncompressBlock(src, dst, dict)
 }
 
+// JoinBlocks merges two independently compressed raw LZ4 blocks into one
+// block that decompresses to left's data followed by right's.
+//
+// left and right use the raw block format only, without external
+// dictionaries: frames, file appending and seeking are out of scope. The
+// compressor is not called, and the inputs are not fully decompressed:
+// existing matches are copied with their original offsets and lengths, and
+// only left's trailing literals and right's leading literals are merged and
+// re-encoded.
+//
+// Every offset is validated against the bytes generated within the block it
+// belongs to, so an offset in right that would need an external dictionary is
+// rejected even though the joined data would let it reach into left. A
+// block must end with a literals-only sequence exactly at its last byte; an
+// empty compressed slice is invalid, while empty data is encoded as a single
+// zero token.
+//
+// maxSize bounds the decompressed size of the result; the inputs and their
+// sum are parsed and checked against it before the output is allocated. The
+// returned slice does not share the inputs' backing storage.
+//
+// An error is returned if either block is invalid, uses an external
+// dictionary, or the merged decompressed size would exceed maxSize.
+func JoinBlocks(left, right []byte, maxSize int) ([]byte, error) {
+	return lz4block.JoinBlocks(left, right, maxSize)
+}
+
 // A Compressor compresses data into the LZ4 block format.
 // It uses a fast compression algorithm.
 //
