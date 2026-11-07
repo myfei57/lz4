@@ -20,4 +20,6 @@ const (
 	ErrEndOfStream                   Error = "lz4: end of stream reached"
 	ErrInvalidFrameDescriptor        Error = "lz4: invalid or unsupported frame descriptor"
 	ErrInvalidContentSize            Error = "lz4: content size mismatch"
+	ErrOptimalInputTooLarge          Error = "lz4: input too large for optimal compression"
+	ErrOptimalShortBuffer            Error = "lz4: destination buffer too short for optimal block"
 )

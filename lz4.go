@@ -112,6 +112,49 @@ func (c *CompressorCCompat) CompressBlock(src, dst []byte) (int, error) {
 	return c.c.CompressBlock(src, dst, c.Acceleration)
 }
 
+// OptimalMaxInputSize is the largest independent block accepted by
+// CompressorOptimal, in bytes.
+const OptimalMaxInputSize = lz4block.OptimalMaxInputSize
+
+// OptimalMaxWorkspace is an upper bound on the scratch memory a
+// CompressorOptimal retains for an OptimalMaxInputSize-byte input, in bytes,
+// excluding the destination buffer.
+const OptimalMaxWorkspace = lz4block.OptimalMaxWorkspace
+
+// A CompressorOptimal compresses an independent block into the shortest legal
+// LZ4 block encoding, using a dynamic program over every legal parse. It does
+// not use an external dictionary and accepts inputs of at most
+// OptimalMaxInputSize bytes; longer inputs fail with ErrOptimalInputTooLarge.
+//
+// The encoding takes every real byte into account: token, literal and match
+// length extensions, literal bytes and the two-byte match offset. A shorter
+// match can be chosen when it leaves a better parse later, and literal runs
+// are allowed to cross extension thresholds (15, 270, ...). Incompressible
+// input is encoded in full as literals; ErrOptimalShortBuffer means dst is
+// smaller than the exact optimal size. Output is deterministic across Reset
+// and reuse.
+//
+// Compression is O(n^2) in the input length. A CompressorOptimal is not safe
+// for concurrent use by multiple goroutines. It is a block-format compressor;
+// it is not a Writer compression level.
+type CompressorOptimal struct{ c lz4block.CompressorOptimal }
+
+// Reset clears the compressor and its retained scratch space.
+func (c *CompressorOptimal) Reset() { c.c.Reset() }
+
+// CompressBlock compresses src into the shortest legal LZ4 block in dst and
+// returns its size, which is always positive when the error is nil. If dst has
+// length at least CompressBlockBound(len(src)), it always fits.
+func (c *CompressorOptimal) CompressBlock(src, dst []byte) (int, error) {
+	return c.c.CompressBlock(src, dst)
+}
+
+// CompressBlockOptimal is CompressorOptimal.CompressBlock using a pooled
+// CompressorOptimal.
+func CompressBlockOptimal(src, dst []byte) (int, error) {
+	return lz4block.CompressBlockOptimal(src, dst)
+}
+
 // A CompressorHC compresses data into the LZ4 block format.
 // Its compression ratio is potentially better than that of a Compressor,
 // but it is also slower and requires more memory.
@@ -182,4 +225,10 @@ const (
 	// from the content size in its descriptor, or when writing a frame whose data differs
 	// from SizeOption.
 	ErrInvalidContentSize = lz4errors.ErrInvalidContentSize
+	// ErrOptimalInputTooLarge is returned by CompressorOptimal when the input
+	// is longer than OptimalMaxInputSize.
+	ErrOptimalInputTooLarge = lz4errors.ErrOptimalInputTooLarge
+	// ErrOptimalShortBuffer is returned by CompressorOptimal when the
+	// destination is shorter than the exact optimal encoding.
+	ErrOptimalShortBuffer = lz4errors.ErrOptimalShortBuffer
 )
